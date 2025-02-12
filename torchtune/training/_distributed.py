@@ -574,6 +574,8 @@ def load_from_full_optimizer_state_dict(
         full_param_groups = full_sd["param_groups"]
         full_state = full_sd["state"]
 
+        model_state_dict = model.state_dict()
+
         for param_group, full_param_group in zip(param_groups, full_param_groups):
             for key, value in full_param_group.items():
                 if key == PARAMS:
@@ -585,7 +587,10 @@ def load_from_full_optimizer_state_dict(
                 param_state = state[pid]
                 full_param_state = full_state[full_pid]
                 for attr, full_tensor in full_param_state.items():
-                    sharded_tensor = param_state[attr]
+                    sharded_tensor = param_state.get(attr)
+                    if sharded_tensor is None and full_tensor.dim() > 0:
+                        sharded_tensor = model_state_dict.get(full_pid)
+
                     if isinstance(sharded_tensor, DTensor):
                         # exp_avg is DTensor
                         param_state[attr] = distribute_tensor(
@@ -596,6 +601,7 @@ def load_from_full_optimizer_state_dict(
                     else:
                         # step is plain tensor
                         param_state[attr] = full_tensor
+
         opt.load_state_dict(
             {
                 "param_groups": param_groups,

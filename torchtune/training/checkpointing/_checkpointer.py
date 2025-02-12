@@ -111,11 +111,9 @@ class _CheckpointerInterface(Protocol):
 
     """
 
-    def load_checkpoint(self, **kwargs) -> dict[str, Any]:
-        ...
+    def load_checkpoint(self, **kwargs) -> dict[str, Any]: ...
 
-    def save_checkpoint(self, state_dict: dict[str, Any], **kwargs) -> None:
-        ...
+    def save_checkpoint(self, state_dict: dict[str, Any], **kwargs) -> None: ...
 
 
 class FullModelTorchTuneCheckpointer(_CheckpointerInterface):
@@ -945,14 +943,14 @@ class FullModelHFCheckpointer(_CheckpointerInterface):
                     if "text_config" in self._config
                     else self._config
                 )
-                state_dict[
-                    training.ADAPTER_KEY
-                ] = convert_weights.tune_to_peft_adapter_weights(
-                    state_dict[training.ADAPTER_KEY],
-                    num_heads=config["num_attention_heads"],
-                    num_kv_heads=config["num_key_value_heads"],
-                    dim=config["hidden_size"],
-                    head_dim=config.get("head_dim", None),
+                state_dict[training.ADAPTER_KEY] = (
+                    convert_weights.tune_to_peft_adapter_weights(
+                        state_dict[training.ADAPTER_KEY],
+                        num_heads=config["num_attention_heads"],
+                        num_kv_heads=config["num_key_value_heads"],
+                        dim=config["hidden_size"],
+                        head_dim=config.get("head_dim", None),
+                    )
                 )
                 output_path = os.path.join(
                     self._output_dir, output_dirname, ADAPTER_MODEL_FNAME
@@ -990,11 +988,11 @@ class FullModelHFCheckpointer(_CheckpointerInterface):
                     "PEFT integration for Llama3.2 Vision is not supported, skipping adapter config save"
                 )
             else:
-                state_dict[
-                    training.ADAPTER_CONFIG
-                ] = convert_weights.tune_to_peft_adapter_config(
-                    adapter_config=state_dict[training.ADAPTER_CONFIG],
-                    base_model_name_or_path=self.repo_id,
+                state_dict[training.ADAPTER_CONFIG] = (
+                    convert_weights.tune_to_peft_adapter_config(
+                        adapter_config=state_dict[training.ADAPTER_CONFIG],
+                        base_model_name_or_path=self.repo_id,
+                    )
                 )
                 output_path = (
                     os.path.join(self._output_dir, output_dirname, ADAPTER_CONFIG_FNAME)
@@ -1359,7 +1357,7 @@ class DistributedCheckpointer(_CheckpointerInterface):
             intermediate checkpoint. A valid checkpoint needs to have the metadata file.
         """
 
-        checkpoint_dir_pattern = re.compile(f"{self._checkpoint_dir_prefix}_(\\d+)")
+        checkpoint_dir_pattern = re.compile(f"{self._checkpoint_dir_prefix}_-?(\\d+)")
         checkpoint_paths = [
             name
             for name in os.listdir(self._output_dir)

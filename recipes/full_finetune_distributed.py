@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import os
+import glob
 import sys
 import time
 
@@ -45,6 +46,7 @@ from torchtune.training.quantization import (
     convert_to_float8_training,
     is_fp8_tensorwise_scaling,
 )
+from torchtune.training.qat_params import split_param_groups
 
 from tqdm import tqdm
 
@@ -271,6 +273,7 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
         self.epochs_run = 0
         self.total_epochs = cfg.epochs
         self.max_steps_per_epoch = cfg.max_steps_per_epoch
+        self.save_checkpoint_steps = cfg.get("save_checkpoint_steps", None)
         self.global_step = 0
 
     def _update_recipe_state(self, ckpt_dict: dict[str, Any]) -> None:
@@ -377,6 +380,7 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
                 if training.OPT_KEY in checkpoint_dict
                 else None
             ),
+            cfg_quantizer=cfg.get("quantizer"),
         )
         if self._compile_optimizer_step:
             if self._optimizer_in_bwd:
@@ -388,7 +392,10 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
                 backend=self._compile_backend,
             )
 
-        if self._resume_from_checkpoint:
+        intermediate_checkpoint_dirs = glob.glob(
+            "epoch_*", root_dir=cfg.checkpointer.output_dir
+        )
+        if self._resume_from_checkpoint and intermediate_checkpoint_dirs:
             # If async checkpointing is enabled, intermediate checkpoints are saved asynchronously
             # using the DistributedCheckpointer.
             # Therefore the recipe needs to load the distributed checkpoint to restore the training
@@ -403,6 +410,7 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
                                 if self._optimizer_in_bwd
                                 else self._optimizer
                             ),
+                            dataloader=self._dataloader,
                         )
                     )
                 except Exception as e:
@@ -431,6 +439,7 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
             shuffle=cfg.shuffle,
             batch_size=cfg.batch_size,
             collate_fn=collate_name,
+            dataloader_state_dict=checkpoint_dict.get(training.DATALOADER_KEY, None),
         )
 
         # Setup validation dataloader if validation dataset is provided
@@ -720,7 +729,8 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
         self,
         cfg_optimizer: DictConfig,
         optimizer_in_bwd: bool = False,
-        opt_state_dict: Optional[dict[str, Any]] = None,
+        opt_state_dict: Optional[Dict[str, Any]] = None,
+        cfg_quantizer: Optional[DictConfig] = None,
     ) -> Optional[Optimizer]:
         if optimizer_in_bwd:
             # Maintain a dict of optims for every parameter.
@@ -756,18 +766,38 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
                         ) from e
             utils.log_rank_zero(self._logger, "In-backward optimizers are set up.")
             return None
+
+        if cfg_quantizer is not None:
+            # split params into quantizable and non-quantizable groups
+            params_quant, params_no_quant = split_param_groups(
+                self._model, cfg_quantizer.pop("full_prec_pat", None)
+            )
+            param_groups = [
+                {
+                    "params": params_quant,
+                    "quant_bits": cfg_quantizer.pop("weight_bits"),
+                },
+                {"params": params_no_quant},
+            ]
+            base_optimizer = config.instantiate(cfg_optimizer, param_groups)
+            quantizer = config.instantiate(cfg_quantizer.pop("quantizer"))
+            prox_map = config.instantiate(cfg_quantizer.pop("prox_map"))
+            optimizer = config.instantiate(
+                cfg_quantizer, base_optimizer, quantizer, prox_map
+            )
         else:
             optimizer = config.instantiate(cfg_optimizer, self._model.parameters())
-            if opt_state_dict:
-                training.load_from_full_optimizer_state_dict(
-                    self._model,
-                    optimizer,
-                    opt_state_dict,
-                    self._device,
-                )
 
-            utils.log_rank_zero(self._logger, "Optimizer is initialized.")
-            return optimizer
+        if opt_state_dict:
+            training.load_from_full_optimizer_state_dict(
+                self._model,
+                optimizer,
+                opt_state_dict,
+                self._device,
+            )
+
+        utils.log_rank_zero(log, "Optimizer is initialized.")
+        return optimizer
 
     def _setup_data(
         self,
@@ -818,6 +848,8 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
             # dropping last avoids shape issues with compile + flex attention
             drop_last=True,
         )
+        if dataloader_state_dict is not None:
+            dataloader.load_state_dict(dataloader_state_dict)
 
         return dataloader
 
@@ -886,6 +918,24 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
 
         self._model.train()
         return log_dict
+
+    def _save_checkpoint(self, curr_epoch: int) -> None:
+        self._checkpoint_client.save_checkpoint(
+            model=self._model,
+            optimizer=(
+                self._optimizer
+                if not self._optimizer_in_bwd
+                else self._optim_ckpt_wrapper
+            ),
+            training_progress=TrainingProgress(
+                seed=self.seed,
+                epochs_run=self.epochs_run,
+                total_epochs=self.total_epochs,
+                max_steps_per_epoch=self.max_steps_per_epoch,
+            ),
+            epoch=curr_epoch,
+            dataloader=self._dataloader,
+        )
 
     def train(self) -> None:
         """
@@ -1054,6 +1104,14 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
                     ):
                         pbar.refresh()
                         self.validate()
+                    if (
+                        self.save_checkpoint_steps
+                        and ((idx + 1) // self._gradient_accumulation_steps)
+                        % self.save_checkpoint_steps
+                        == 0
+                    ):
+                        # Force intermediate checkpoint save
+                        self._save_checkpoint(curr_epoch - 1)
 
                 if (
                     (idx + 1) // self._gradient_accumulation_steps
@@ -1061,22 +1119,7 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
                     break
 
             self.epochs_run += 1
-            self._checkpoint_client.save_checkpoint(
-                model=self._model,
-                optimizer=(
-                    self._optimizer
-                    if not self._optimizer_in_bwd
-                    else self._optim_ckpt_wrapper
-                ),
-                training_progress=TrainingProgress(
-                    seed=self.seed,
-                    epochs_run=self.epochs_run,
-                    total_epochs=self.total_epochs,
-                    max_steps_per_epoch=self.max_steps_per_epoch,
-                    dataloader_state_dict=self._dataloader.state_dict(),
-                ),
-                epoch=curr_epoch,
-            )
+            self._save_checkpoint(curr_epoch)
 
         self._profiler.stop()
 

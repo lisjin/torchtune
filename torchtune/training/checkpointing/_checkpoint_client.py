@@ -126,6 +126,7 @@ class CheckpointClient:
         epoch: int,
         adapter_config: Optional[dict[str, Any]],
         adapter_only: bool,
+        dataloader: Optional[torch.utils.data.DataLoader] = None,
     ) -> None:
         """
         Checkpoint the training state asynchronously as a distributed checkpoint. Saving
@@ -151,6 +152,8 @@ class CheckpointClient:
 
         ckpt_dict[training.MODEL_KEY] = model.state_dict()
         ckpt_dict[training.OPT_KEY] = optimizer.state_dict()
+        if dataloader is not None:
+            ckpt_dict[training.DATALOADER_KEY] = dataloader.state_dict()
 
         if adapter_config is not None:
             ckpt_dict.update(
@@ -210,6 +213,7 @@ class CheckpointClient:
         adapter_config: Optional[dict[str, Any]],
         adapter_only: bool,
         single_device: bool,
+        dataloader: Optional[torch.utils.data.DataLoader] = None,
     ) -> None:
         """
         Checkpoint the training state synchronously.
@@ -237,6 +241,7 @@ class CheckpointClient:
 
         model_state_dict = {}
         optim_state_dict = {}
+        dataloader_state_dict = {}
 
         if is_not_distributed_checkpointer and not single_device:
             # To prevent GPU memory from spiking during checkpoint save,
@@ -265,10 +270,10 @@ class CheckpointClient:
                 # This check can be removed once we fully migrate over to ``OptimizerInBackward``
                 if isinstance(optimizer, OptimizerInBackwardWrapper):
                     for param, opt in optimizer.optim_map.items():
-                        optim_state_dict[
-                            param
-                        ] = training.get_full_optimizer_state_dict(
-                            model, opt, self._is_rank_zero, device=self._device
+                        optim_state_dict[param] = (
+                            training.get_full_optimizer_state_dict(
+                                model, opt, self._is_rank_zero, device=self._device
+                            )
                         )
                 elif isinstance(optimizer, OptimizerInBackward):
                     optim_state_dict = optimizer.state_dict()
@@ -286,11 +291,17 @@ class CheckpointClient:
         else:
             optim_state_dict = None
 
+        if intermediate_checkpoint and dataloader is not None:
+            dataloader_state_dict = dataloader.state_dict()
+        else:
+            dataloader_state_dict = None
+
         def _save_checkpoint_helper():
             # if training is in-progress, checkpoint the optimizer state and recipe state
             # as well.
             if intermediate_checkpoint:
                 checkpoint_dict.update({training.OPT_KEY: optim_state_dict})
+                checkpoint_dict.update({training.DATALOADER_KEY: dataloader_state_dict})
                 checkpoint_dict.update(training_progress.state_dict())
 
             if adapter_config is not None:
@@ -342,6 +353,7 @@ class CheckpointClient:
         adapter_config: Optional[dict[str, Any]] = None,
         adapter_only: bool = False,
         single_device: bool = False,
+        dataloader: Optional[torch.utils.data.DataLoader] = None,
     ) -> None:
         """
         Checkpoint the training state.
@@ -354,6 +366,7 @@ class CheckpointClient:
         Otherwise, the checkpoint will be saved synchronously with the
         checkpointer user has configured.
         """
+
         intermediate_checkpoint = epoch + 1 < training_progress.total_epochs
 
         if intermediate_checkpoint and self._enable_async_checkpointing:
@@ -364,6 +377,7 @@ class CheckpointClient:
                 epoch,
                 adapter_config,
                 adapter_only,
+                dataloader,
             )
         else:
             self._save_checkpoint_sync(
@@ -374,6 +388,7 @@ class CheckpointClient:
                 adapter_config,
                 adapter_only,
                 single_device,
+                dataloader,
             )
 
     def load_base_checkpoint(self) -> dict[str, Any]:
@@ -388,6 +403,7 @@ class CheckpointClient:
         model: torch.nn.Module,
         optimizer: Union[torch.optim.Optimizer, OptimizerInBackwardWrapper],
         adapter_config: Optional[dict[str, Any]] = None,
+        dataloader: Optional[torch.utils.data.DataLoader] = None,
     ) -> dict[str, Any]:
         """
         This method is used to resume training from a distributed checkpoint state.
@@ -410,9 +426,9 @@ class CheckpointClient:
         if "param_groups" in optim_state_dict:
             for param_group in optim_state_dict["param_groups"]:
                 if param_group.get("initial_lr") is None:
-                    param_group[
-                        "initial_lr"
-                    ] = 0.0  # This will get overriden by the actual value in optimizer
+                    param_group["initial_lr"] = (
+                        0.0  # This will get overriden by the actual value in optimizer
+                    )
 
         checkpoint_dict.update(
             {
@@ -424,6 +440,8 @@ class CheckpointClient:
                 training.MAX_STEPS_KEY: 0,
             }
         )
+        if dataloader is not None:
+            checkpoint_dict.update({training.DATALOADER_KEY: dataloader.state_dict()})
 
         if adapter_config is not None:
             checkpoint_dict.update(

@@ -17,11 +17,12 @@ def get_cosine_schedule_with_warmup(
     num_warmup_steps: int,
     num_training_steps: int,
     num_cycles: float = 0.5,
+    min_ratio: float = 0.0,
     last_epoch: int = -1,
 ) -> LambdaLR:
     """
     Create a learning rate schedule that linearly increases the learning rate from
-    0.0 to lr over ``num_warmup_steps``, then decreases to 0.0 on a cosine schedule over
+    0.0 to lr over ``num_warmup_steps``, then decreases to min_ratio * lr on a cosine schedule over
     the remaining ``num_training_steps-num_warmup_steps`` (assuming ``num_cycles`` = 0.5).
 
     This is based on the Hugging Face implementation
@@ -44,16 +45,20 @@ def get_cosine_schedule_with_warmup(
         # linear warmup phase
         if current_step < num_warmup_steps:
             return current_step / max(1, num_warmup_steps)
+        elif current_step > num_training_steps:
+            return min_ratio
 
         # cosine
         progress = (current_step - num_warmup_steps) / max(
             1, num_training_steps - num_warmup_steps
         )
 
-        cosine_lr_multiple = 0.5 * (
-            1.0 + math.cos(math.pi * num_cycles * 2.0 * progress)
+        cosine_lr_multiple = (
+            (1 - min_ratio)
+            * 0.5
+            * (1.0 + math.cos(math.pi * num_cycles * 2.0 * progress))
         )
-        return max(0.0, cosine_lr_multiple)
+        return min_ratio + max(0.0, cosine_lr_multiple)
 
     return LambdaLR(optimizer, lr_lambda, last_epoch)
 
