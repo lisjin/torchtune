@@ -685,8 +685,14 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
         else:
             optimizer = config.instantiate(cfg_optimizer, self._model.parameters())
         if opt_state_dict:
-            optimizer.load_state_dict(opt_state_dict)
-        log.info("Optimizer is initialized.")
+            training.load_from_full_optimizer_state_dict(
+                self._model,
+                optimizer,
+                opt_state_dict,
+                self._device,
+            )
+
+        utils.log_rank_zero(log, "Optimizer is initialized.")
         return optimizer
 
     def _setup_data(
