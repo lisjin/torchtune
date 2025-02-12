@@ -7,7 +7,7 @@ NORM_LAYERS = (nn.modules.batchnorm._BatchNorm, nn.LayerNorm, nn.RMSNorm)
 
 
 def get_param_groups(
-    model: torch.nn.Module,
+    model: nn.Module,
     params_quant: Dict[str, Tensor],
     params_no_wd: Dict[str, Tensor],
     params_wd: Dict[str, Tensor],
@@ -45,7 +45,7 @@ def get_param_groups(
 
 
 def split_param_groups(
-    model: torch.nn.Module, skip_wd_names: Optional[Set[str]] = None
+    model: nn.Module, skip_wd_names: Optional[Set[str]] = None
 ) -> Tuple[List[Any], List[Any], List[Any]]:
     """Splits model parameters into 3 groups, described below.
 
@@ -70,54 +70,3 @@ def split_param_groups(
         list(params_no_wd.values()),
         list(params_wd.values()),
     )
-
-
-class AverageMeter(object):
-    """Computes and stores the average and current value
-
-    The (global) average is synced across all worker processes. The main process
-    can optionally have a fixed length buffer to average over its most recent
-    `window_size` values.
-    """
-
-    def __init__(self, window_size=0):
-        self.reset(window_size)
-
-    def reset(self, window_size):
-        self.val = 0
-        self.sum = 0
-        self.count = 0
-        self.buf = (
-            deque(maxlen=window_size) if is_main_process() and window_size > 0 else None
-        )
-
-    def update(self, val, n=1):
-        self.val = val
-        self.sum += val * n
-        self.count += n
-        if self.buf is not None:
-            self.buf.extend([val] * n)
-
-    @property
-    def avg(self):
-        """Average across all values. Reduces across workers if applicable."""
-        if dist.is_available() and dist.is_initialized():
-            # Average over worker values if using distributed training
-            t = torch.tensor([self.count, self.sum], device="cuda")
-            dist.barrier()
-            dist.all_reduce(t)
-
-            self.count = int(t[0].item())
-            self.sum = t[1].item()
-        return self.sum / self.count
-
-    @property
-    def window_avg(self):
-        """Worker-specific average over the most recent `window_size` elements"""
-        return sum(self.buf) / len(self.buf) if self.buf is not None else -1
-
-
-def accuracy(output, target, topk=(1,)):
-    """Computes the precision@k for the specified values of k"""
-    maxk = max(topk)
-    batch_size = target.size(0)

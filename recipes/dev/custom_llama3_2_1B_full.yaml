@@ -71,7 +71,7 @@ quantizer:
   quantizer:
     _component_: parq.quant.LSBQuantizer
   prox_map:
-    _component_: parq.optim.ProxHardQuant
+    _component_: parq.optim.ProxPARQ
   warmup_steps: 10
   quant_period: 5
   quant_per_channel: True
