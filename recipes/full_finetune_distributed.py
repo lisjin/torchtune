@@ -31,6 +31,7 @@ from torchtune.training.checkpointing._checkpoint_client import (
     TrainingProgress,
 )
 from torchtune.training.lr_schedulers import get_lr
+from torchtune.training.qat_params import split_param_groups
 
 from tqdm import tqdm
 
@@ -284,6 +285,7 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
                 if training.OPT_KEY in checkpoint_dict
                 else None
             ),
+            cfg_quantizer=cfg.get("quantizer"),
         )
 
         if self._resume_from_checkpoint:
@@ -591,6 +593,7 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
         cfg_optimizer: DictConfig,
         optimizer_in_bwd: bool = False,
         opt_state_dict: Optional[Dict[str, Any]] = None,
+        cfg_quantizer: Optional[DictConfig] = None,
     ) -> Optional[Optimizer]:
         if optimizer_in_bwd:
             # Maintain a dict of optims for every parameter.
@@ -626,18 +629,26 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
                         ) from e
             utils.log_rank_zero(log, "In-backward optimizers are set up.")
             return None
+
+        if cfg_quantizer is not None:
+            weights, biases, others = split_param_groups(self._model)
+            param_groups = [
+                {"params": weights, "quant_bits": cfg_quantizer.pop("weight_bits")},
+                {"params": biases, "weight_decay": 0},
+                {"params": others},
+            ]
+            base_optimizer = config.instantiate(cfg_optimizer, param_groups)
+            quantizer = config.instantiate(cfg_quantizer.pop("quantizer"))
+            prox_map = config.instantiate(cfg_quantizer.pop("prox_map"))
+            optimizer = config.instantiate(
+                cfg_quantizer, base_optimizer, quantizer, prox_map
+            )
         else:
             optimizer = config.instantiate(cfg_optimizer, self._model.parameters())
-            if opt_state_dict:
-                training.load_from_full_optimizer_state_dict(
-                    self._model,
-                    optimizer,
-                    opt_state_dict,
-                    self._device,
-                )
-
-            utils.log_rank_zero(log, "Optimizer is initialized.")
-            return optimizer
+        if opt_state_dict:
+            optimizer.load_state_dict(opt_state_dict)
+        log.info("Optimizer is initialized.")
+        return optimizer
 
     def _setup_data(
         self,
