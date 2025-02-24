@@ -18,6 +18,9 @@ def get_param_groups(
     """Recurse over children of model to extract quantizable weights, as well as
     non-quantizable params (params_no_wd, params_wd).
     """
+    if hasattr(model, "_checkpoint_wrapped_module"):
+        model = model._checkpoint_wrapped_module
+
     for mn, module in model.named_children():
         cur_prefix = f"{prefix}.{mn}" if len(prefix) else mn
 
