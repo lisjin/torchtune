@@ -29,7 +29,7 @@ def get_param_groups(
 
             if not use_full_prec and param.dim() > 1:
                 params_quant[param_name] = param
-            elif pn == "bias" or skip_wd_names and param_name in skip_wd_names:
+            elif param.dim() == 1 or skip_wd_names and param_name in skip_wd_names:
                 params_no_wd[param_name] = param
             else:
                 params_wd[param_name] = param
