@@ -492,11 +492,10 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
             return None
 
         if cfg_quantizer is not None:
-            weights, biases, others = split_param_groups(self._model)
+            params_quant, params_no_quant = split_param_groups(self._model)
             param_groups = [
-                {"params": weights, "quant_bits": cfg_quantizer.pop("weight_bits")},
-                {"params": biases, "weight_decay": 0},
-                {"params": others},
+                {"params": params_quant, "quant_bits": cfg_quantizer.pop("weight_bits")},
+                {"params": params_no_quant},
             ]
             base_optimizer = config.instantiate(cfg_optimizer, param_groups)
             quantizer = config.instantiate(cfg_quantizer.pop("quantizer"))

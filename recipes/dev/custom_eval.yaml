@@ -13,7 +13,7 @@ checkpointer:
   _component_: torchtune.training.FullModelHFCheckpointer
   checkpoint_dir: /tmp/torchtune/llama3_2_1B
   checkpoint_files: [
-    ft-model-00001-of-00001.safetensors
+    model-00001-of-00001.safetensors
   ]
   recipe_checkpoint: null
   output_dir: ${output_dir}
@@ -31,7 +31,7 @@ dtype: bf16
 seed: 1234 # It is not recommended to change this seed, b/c it matches EleutherAI's default seed
 
 # EleutherAI specific eval args
-tasks: ["arc_easy", "arc_challenge", "hellaswag", "piqa", "wikitext", "winogrande"]
+tasks: ["arc_easy", "arc_challenge", "hellaswag", "piqa", "winogrande"]
 limit: null
 max_seq_length: 4096
 batch_size: 8
