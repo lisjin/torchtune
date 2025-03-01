@@ -4,6 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import glob
 import sys
 import time
 
@@ -224,6 +225,7 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
         self.epochs_run = 0
         self.total_epochs = cfg.epochs
         self.max_steps_per_epoch = cfg.max_steps_per_epoch
+        self.save_checkpoint_steps = cfg.get("save_checkpoint_steps", None)
         self.global_step = 0
 
     def _update_recipe_state(self, ckpt_dict: Dict[str, Any]) -> None:
@@ -309,7 +311,10 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
             cfg_quantizer=cfg.get("quantizer"),
         )
 
-        if self._resume_from_checkpoint:
+        intermediate_checkpoint_dirs = glob.glob(
+            "epoch_*", root_dir=cfg.checkpointer.output_dir
+        )
+        if self._resume_from_checkpoint and intermediate_checkpoint_dirs:
             # If async checkpointing is enabled, intermediate checkpoints are saved asynchronously
             # using the DistributedCheckpointer.
             # Therefore the recipe needs to load the distributed checkpoint to restore the training
@@ -749,6 +754,23 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
 
         return sampler, dataloader
 
+    def _save_checkpoint(self, curr_epoch: int) -> None:
+        self._checkpoint_client.save_checkpoint(
+            model=self._model,
+            optimizer=(
+                self._optimizer
+                if not self._optimizer_in_bwd
+                else self._optim_ckpt_wrapper
+            ),
+            training_progress=TrainingProgress(
+                seed=self.seed,
+                epochs_run=self.epochs_run,
+                total_epochs=self.total_epochs,
+                max_steps_per_epoch=self.max_steps_per_epoch,
+            ),
+            epoch=curr_epoch,
+        )
+
     def train(self) -> None:
         """
         The core training loop.
@@ -925,22 +947,15 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
                     # will include multiple forward / backward passes if gradient accumulation > 1
                     self._profiler.step()
 
+                if (
+                    self.save_checkpoint_steps
+                    and (idx + 1) % self.save_checkpoint_steps == 0
+                ):
+                    # Force intermediate checkpoint save
+                    self._save_checkpoint(curr_epoch - 1)
+
             self.epochs_run += 1
-            self._checkpoint_client.save_checkpoint(
-                model=self._model,
-                optimizer=(
-                    self._optimizer
-                    if not self._optimizer_in_bwd
-                    else self._optim_ckpt_wrapper
-                ),
-                training_progress=TrainingProgress(
-                    seed=self.seed,
-                    epochs_run=self.epochs_run,
-                    total_epochs=self.total_epochs,
-                    max_steps_per_epoch=self.max_steps_per_epoch,
-                ),
-                epoch=curr_epoch,
-            )
+            self._save_checkpoint(curr_epoch)
 
         self._profiler.stop()
 
