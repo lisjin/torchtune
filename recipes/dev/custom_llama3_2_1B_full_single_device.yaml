@@ -56,14 +56,21 @@ checkpointer:
 resume_from_checkpoint: False
 
 # Fine-tuning arguments
-batch_size: 1
+batch_size: 2
 epochs: 1
 optimizer:
-  _component_: bitsandbytes.optim.PagedAdamW8bit
+  _component_: torch.optim.AdamW
   lr: 2e-5
   weight_decay: 0.0
+  fused: True
+
 loss:
   _component_: torchtune.modules.loss.CEWithChunkedOutputLoss
+
+lr_scheduler:
+  _component_: torchtune.training.get_cosine_schedule_with_warmup
+  num_warmup_steps: 0
+
 max_steps_per_epoch: null
 gradient_accumulation_steps: 1  # Use to increase effective batch size
 optimizer_in_bwd: False  # True saves memory. Requires gradient_accumulation_steps=1
@@ -74,18 +81,18 @@ quantizer:
   _component_: parq.optim.QuantOptimizer
   weight_bits: 4
   quantizer:
-    _component_: parq.quant.LSBQuantizer
+    _component_: parq.quant.MaxUnifQuantizer
   prox_map:
     _component_: parq.optim.ProxHardQuant
-  warmup_steps: 9000
-  quant_period: 100
+  warmup_steps: 0
+  quant_period: 1
   quant_per_channel: True
 
 # Training environment
 device: cuda
 
 # Memory management
-enable_activation_checkpointing: False  # True reduces memory
+enable_activation_checkpointing: True  # True reduces memory
 enable_activation_offloading: False  # True reduces memory
 
 # Reduced precision

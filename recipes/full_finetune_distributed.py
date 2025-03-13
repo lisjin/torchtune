@@ -678,9 +678,14 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
             return None
 
         if cfg_quantizer is not None:
-            params_quant, params_no_quant = split_param_groups(self._model)
+            params_quant, params_no_quant = split_param_groups(
+                self._model, cfg_quantizer.pop("full_prec_pat", None)
+            )
             param_groups = [
-                {"params": params_quant, "quant_bits": cfg_quantizer.pop("weight_bits")},
+                {
+                    "params": params_quant,
+                    "quant_bits": cfg_quantizer.pop("weight_bits"),
+                },
                 {"params": params_no_quant},
             ]
             base_optimizer = config.instantiate(cfg_optimizer, param_groups)
@@ -941,11 +946,19 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
                     self._profiler.step()
 
                 if (
-                    self.save_checkpoint_steps
-                    and (idx + 1) % self.save_checkpoint_steps == 0
+                    idx
+                    and self.save_checkpoint_steps
+                    and ((idx + 1) // self._gradient_accumulation_steps)
+                    % self.save_checkpoint_steps
+                    == 0
                 ):
                     # Force intermediate checkpoint save
                     self._save_checkpoint(curr_epoch - 1)
+
+                if (
+                    (idx + 1) // self._gradient_accumulation_steps
+                ) == self.max_steps_per_epoch:
+                    break
 
             self.epochs_run += 1
             self._save_checkpoint(curr_epoch)
