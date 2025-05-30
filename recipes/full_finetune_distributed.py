@@ -10,7 +10,7 @@ import sys
 import time
 
 from functools import partial
-from typing import Any, Optional, Union
+from typing import Any, Dict, Optional, Union
 from warnings import warn
 
 import torch
@@ -387,10 +387,6 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
                 raise ValueError(
                     "optimizer_in_bwd not supported with compiling the optimizer step"
                 )
-            self._optimizer.step = torch.compile(
-                self._optimizer.step,
-                backend=self._compile_backend,
-            )
 
         intermediate_checkpoint_dirs = glob.glob(
             "epoch_*", root_dir=cfg.checkpointer.output_dir
@@ -779,6 +775,8 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
                 },
                 {"params": params_no_quant},
             ]
+            if "block_size" in cfg_quantizer:
+                param_groups[0]["quant_block_size"] = cfg_quantizer.pop("block_size")
             base_optimizer = config.instantiate(cfg_optimizer, param_groups)
             quantizer = config.instantiate(cfg_quantizer.pop("quantizer"))
             prox_map = config.instantiate(cfg_quantizer.pop("prox_map"))
@@ -788,6 +786,11 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
         else:
             optimizer = config.instantiate(cfg_optimizer, self._model.parameters())
 
+        if self._compile_optimizer_step:
+            for group in optimizer.param_groups:
+                if not torch.is_tensor(group["lr"]):
+                    group["lr"] = torch.tensor(group["lr"], device=self._device)
+
         if opt_state_dict:
             training.load_from_full_optimizer_state_dict(
                 self._model,
@@ -796,7 +799,7 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
                 self._device,
             )
 
-        utils.log_rank_zero(log, "Optimizer is initialized.")
+        utils.log_rank_zero(self._logger, "Optimizer is initialized.")
         return optimizer
 
     def _setup_data(
@@ -937,6 +940,22 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
             dataloader=self._dataloader,
         )
 
+    def _mark_gradients(self) -> None:
+        if not self._compile_optimizer_step or getattr(self, "_marked_grads", False):
+            return
+
+        for group in self._optimizer.param_groups:
+            for p in group["params"]:
+                if torch.is_tensor(p.grad):
+                    torch._dynamo.decorators.mark_static_address(p.grad)
+        self._marked_grads = True
+
+    @torch.compile(fullgraph=False)
+    def _optimizer_step_compiled(self) -> None:
+        self._optimizer.step()
+        if self._lr_scheduler is not None:
+            self._lr_scheduler.step()
+
     def train(self) -> None:
         """
         The core training loop.
@@ -958,9 +977,16 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
 
         self._profiler.start()
         # self.epochs_run should be non-zero when we're resuming from a checkpoint
+        num_training_steps = self.total_epochs * self._steps_per_epoch
         for curr_epoch in range(self.epochs_run, self.total_epochs):
             pbar = tqdm(total=self._steps_per_epoch, disable=not self._is_rank_zero)
             self._dataloader.sampler.set_epoch(curr_epoch)
+            if (
+                hasattr(self._optimizer, "num_steps")
+                and self._optimizer.num_steps >= num_training_steps
+            ):
+                self._logger.info(f"Exiting early since {self._optimizer.num_steps=}")
+                break
             for idx, batch in enumerate(self._dataloader):
                 # Start tracking CUDA memory for active steps for just the first epoch
                 if (
@@ -1017,14 +1043,21 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
                             # If sharded, collect the DTensor here
                             if isinstance(grad_norm, DTensor):
                                 grad_norm = grad_norm.full_tensor()
-                        self._optimizer.step()
+                        if self._compile_optimizer_step:
+                            self._mark_gradients()
+                            self._optimizer_step_compiled()  # includes lr_scheduler.step
+                        else:
+                            self._optimizer.step()
                         self._optimizer.zero_grad(set_to_none=True)
 
                     # Update the number of steps when the weights are updated
                     self.global_step += 1
 
                     # Step the learning rate scheduler
-                    if self._lr_scheduler is not None:
+                    if (
+                        not self._compile_optimizer_step
+                        and self._lr_scheduler is not None
+                    ):
                         self._lr_scheduler.step()
 
                     # If float8 training is enabled, perform a single all-reduce to compute the

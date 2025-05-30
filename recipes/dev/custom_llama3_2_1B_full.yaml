@@ -31,12 +31,7 @@ tokenizer:
 dataset:
   _component_: torchtune.datasets.text_completion_dataset
   source: HuggingFaceFW/fineweb-edu
-  data_files: [
-    "sample/10BT/000_00000.parquet",
-    "sample/10BT/001_00000.parquet",
-    "sample/10BT/002_00000.parquet",
-    "sample/10BT/003_00000.parquet",
-  ]
+  data_files: ["sample/10BT/*.parquet"]
   split: train
   packed: False  # True increases speed
 seed: null
@@ -94,7 +89,7 @@ device: cuda
 # Memory management
 enable_activation_checkpointing: True  # True reduces memory
 enable_activation_offloading: False  # True reduces memory
-clip_grad_norm: 1.0
+clip_grad_norm: null
 compile: True  # torch.compile the model + loss, True increases speed + decreases memory
 optimizer_in_bwd: False  # True saves memory. Requires gradient_accumulation_steps=1
 
@@ -107,6 +102,7 @@ metric_logger:
   log_dir: ${output_dir}/logs
 log_every_n_steps: 1
 log_peak_memory_stats: True
+log_level: INFO  # DEBUG, WARN, etc.
 
 
 # Profiler (disabled)
