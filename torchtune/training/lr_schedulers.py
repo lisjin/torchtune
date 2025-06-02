@@ -63,6 +63,35 @@ def get_cosine_schedule_with_warmup(
     return LambdaLR(optimizer, lr_lambda, last_epoch)
 
 
+def get_linear_schedule_with_warmup(
+    optimizer: torch.optim.Optimizer,
+    num_warmup_steps: int,
+    num_training_steps: int,
+    min_ratio: float = 0.0,
+    last_epoch: int = -1,
+) -> LambdaLR:
+    """
+    Create a learning rate schedule that linearly decreases the learning rate from
+    1.0 to min_ratio over ``num_training_steps`` steps, with a warmup phase of
+    ``num_warmup_steps``.
+
+    Returns:
+        torch.optim.lr_scheduler.LambdaLR with the appropriate schedule.
+    """
+
+    def lr_lambda(current_step: int) -> float:
+        if current_step < num_warmup_steps:
+            return current_step / max(1, num_warmup_steps)
+
+        progress = min(
+            (current_step - num_warmup_steps) / (num_training_steps - num_warmup_steps),
+            1.0,
+        )
+        return min_ratio + (1.0 - min_ratio) * (1.0 - progress)
+
+    return LambdaLR(optimizer, lr_lambda, last_epoch)
+
+
 def get_lr(
     optimizer: Union[torch.optim.Optimizer, OptimizerInBackwardWrapper],
 ) -> float:

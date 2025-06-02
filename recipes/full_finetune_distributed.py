@@ -211,6 +211,11 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
             assert (
                 cfg.get("dataset_val") is not None
             ), "run_val_every_n_steps is set but dataset_val is not configured"
+        self._launch_eval_script = cfg.get("launch_eval_script", None)
+        if self._launch_eval_script is not None:
+            assert os.path.isfile(
+                self._launch_eval_script
+            ), f"{self._launch_eval_script=} does not exist"
 
         # Optimizer in backward is not compatible with gradient accumulation or gradient clipping
         if self._optimizer_in_bwd:
@@ -464,7 +469,10 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
             and self.max_steps_per_epoch < self._steps_per_epoch
         ):
             self._steps_per_epoch = self.max_steps_per_epoch
-        self.global_step = self.epochs_run * self._steps_per_epoch
+        if getattr(self._optimizer, "num_steps", 0) > 0:
+            self.global_step = self._optimizer.num_steps
+        else:
+            self.global_step = self.epochs_run * self._steps_per_epoch
 
         # Setup lr scheduler
         self._lr_scheduler = self._setup_lr_scheduler(
@@ -940,6 +948,18 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
             dataloader=self._dataloader,
         )
 
+    def _launch_eval(self) -> None:
+        ckpt_path = os.path.join(self._output_dir, "epoch_-1")
+        if not os.path.isdir(ckpt_path):
+            self._logger.warning(
+                f"Path {ckpt_path} does not exist. Skipping evaluation."
+            )
+            return
+
+        os.system(
+            f"bash {self._launch_eval_script} {self._output_dir} {self.global_step:06d}"
+        )
+
     def _mark_gradients(self) -> None:
         if not self._compile_optimizer_step or getattr(self, "_marked_grads", False):
             return
@@ -979,15 +999,16 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
         # self.epochs_run should be non-zero when we're resuming from a checkpoint
         num_training_steps = self.total_epochs * self._steps_per_epoch
         for curr_epoch in range(self.epochs_run, self.total_epochs):
-            pbar = tqdm(total=self._steps_per_epoch, disable=not self._is_rank_zero)
+            steps_remain = (curr_epoch + 1) * self._steps_per_epoch - self.global_step
+            pbar = tqdm(total=steps_remain, disable=not self._is_rank_zero)
             self._dataloader.sampler.set_epoch(curr_epoch)
-            if (
-                hasattr(self._optimizer, "num_steps")
-                and self._optimizer.num_steps >= num_training_steps
-            ):
-                self._logger.info(f"Exiting early since {self._optimizer.num_steps=}")
-                break
+
             for idx, batch in enumerate(self._dataloader):
+                # PARQ training initializes self.global_step to self._optimizer.num_steps
+                if self.global_step >= num_training_steps:
+                    self._logger.info(f"Exiting early since {self.global_step=}")
+                    break
+
                 # Start tracking CUDA memory for active steps for just the first epoch
                 if (
                     self._is_rank_zero
@@ -1145,6 +1166,8 @@ class FullFinetuneRecipeDistributed(FTRecipeInterface):
                     ):
                         # Force intermediate checkpoint save
                         self._save_checkpoint(curr_epoch - 1)
+                        if self._is_rank_zero and self._launch_eval_script is not None:
+                            self._launch_eval()
 
                 if (
                     (idx + 1) // self._gradient_accumulation_steps

@@ -31,9 +31,9 @@ dtype: bf16
 seed: 1234 # It is not recommended to change this seed, b/c it matches EleutherAI's default seed
 
 # EleutherAI specific eval args
-tasks: ["arc_easy", "arc_challenge", "hellaswag", "piqa", "winogrande"]
+tasks: ["arc_easy", "arc_challenge", "hellaswag", "piqa", "winogrande", "wikitext"]
 limit: null
-max_seq_length: 4096
+max_seq_length: 2048
 batch_size: 8
 enable_kv_cache: True
 
